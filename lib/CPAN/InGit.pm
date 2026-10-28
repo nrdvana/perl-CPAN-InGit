@@ -258,7 +258,7 @@ sub lookup_tree($self, $branch_or_tag_or_id) {
       $origin= $branch_or_tag_or_id;
       $tree= $origin->peel('tree');
    } elsif ($branch_or_tag_or_id eq 'HEAD') {
-      $tree= $repo->head->target->peel('tree');
+      $tree= $repo->head->target->tree;
       $origin= $repo->is_head_detached? undef
              : $repo->head;
    } elsif ($origin= eval { Git::Raw::Branch->lookup($repo, $branch_or_tag_or_id, 1) }) {

@@ -22,7 +22,7 @@ It can store changes to the tree which have not been committed yet, but which
 are seen when querying the paths of the tree.  The changes can be serialized in
 e.g. a web framework's session, and then you can commit them when ready.
 
-If C<workdir_path> is set, this will instead write changes to the working
+If C<use_workdir> is set, this will instead write changes to the working
 directory and add them to the Git index, where the user can commit them.
 
 =cut
@@ -132,6 +132,7 @@ sub set_path($self, $path, $data, %opts) {
    my @path= split m{/+}, $path;
    my $basename= pop @path;
    if ($self->use_workdir) {
+      my $index= $repo->index;
       my $fullpath= $self->git_repo->workdir;
       # create missing directories
       for (@path) {
@@ -142,15 +143,18 @@ sub set_path($self, $path, $data, %opts) {
       $fullpath .= '/'.$basename;
       if (!defined $data) {
          unlink($fullpath);
-         $self->git_repo->index->remove($path);
+         $index->remove($path);
       } else {
          # a shame there's no way to add the blob directly...
          $data= \$data->content if ref($data)->isa('Git::Raw::Blob');
          # Write file
          _mkfile($fullpath, $data, $mode);
          # Add to the index
-         $self->git_repo->index->add_frombuffer($path, $data, $mode);
+         $index->add_frombuffer($path, $data, $mode);
       }
+      # Index mutations are in memory until written.  Persist them even when the
+      # caller leaves committing to the user (as cpangit-add does on HEAD).
+      $index->write;
    }
    else {
       my $node= ($self->{_changes} //= {});
