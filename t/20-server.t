@@ -4,6 +4,7 @@ use Test2AndUtils;
 use File::Temp;
 use Git::Raw;
 use Test::Mojo;
+use Time::Piece;
 use CPAN::InGit;
 use CPAN::InGit::Server;
 use v5.36;
@@ -57,6 +58,56 @@ resources:
   license: http://dev.perl.org/licenses/
 version: 1.00
 END
+
+subtest repository_index => sub {
+   my $dir= File::Temp->newdir;
+   my $repo= CPAN::InGit->new(repo => Git::Raw::Repository->init($dir, 1));
+   my $hidden= Test::Mojo->new('Mojolicious');
+   CPAN::InGit::Server->mount($hidden->app->routes->any('/'), $repo);
+   $hidden->get_ok('/')->status_is(200)->text_is('h1', 'CPAN::InGit repository')
+      ->element_exists('a[href="https://metacpan.org/pod/CPAN::InGit"]')
+      ->element_count_is('#branch-index', 0);
+   $hidden->get_ok('/?index_branches=1')->status_is(200)->element_count_is('#branch-index', 0);
+
+   my $listed= Test::Mojo->new('Mojolicious');
+   CPAN::InGit::Server->mount($listed->app->routes->any('/pan'), $repo, index_branches => 1);
+   $listed->get_ok('/pan/')->status_is(200)->element_exists('#branch-index')
+      ->text_like('#branch-index p', qr/No CPAN archive branches/);
+   $repo->create_archive_tree('zeta');
+   $repo->create_archive_tree('alpha');
+   $repo->create_archive_tree('feature/demo');
+   my $ordinary= CPAN::InGit::MutableTree->new(parent => $repo);
+   $ordinary->set_path('README', \'An ordinary Git branch');
+   $ordinary->commit('Non-archive branch', create_branch => 'ordinary');
+   $listed->get_ok('/pan')->status_is(200)->element_count_is('#branch-index li', 3)
+      ->element_exists('#branch-index a[href="/pan/alpha/"]')
+      ->element_exists('#branch-index a[href="/pan/feature%2Fdemo/"]');
+   is( [map $_->text, $listed->tx->res->dom->find('#branch-index a')->each],
+      [qw(alpha feature/demo zeta)], 'local archive branches sorted by name' );
+   $listed->get_ok('/pan/feature%2Fdemo/')->status_is(200)->text_is('h1', 'feature/demo');
+   $listed->get_ok('/pan/feature/demo/modules.json')->status_is(200)->json_is('/complete', JSON::PP::true);
+   $listed->get_ok('/pan/feature/demo/modules/02packages.details.txt')->status_is(200);
+   $hidden->get_ok('/')->status_is(200)->element_count_is('#branch-index', 0)->content_unlike(qr/zeta/);
+
+   # Single-tree mounts keep their archive index even when branch listing is enabled.
+   my $fixed= Test::Mojo->new('Mojolicious');
+   CPAN::InGit::Server->mount($fixed->app->routes->any('/'), $repo,
+      archive_tree => $repo->get_archive_tree('alpha'), index_branches => 1);
+   $fixed->get_ok('/')->status_is(200)->text_is('h1', 'alpha')->element_count_is('#branch-index', 0);
+
+   for my $enabled (0, 1) {
+      local $ENV{MOJO_LOG_LEVEL}= 'fatal';
+      my @args= ($^X, "-I$FindBin::Bin/../lib", "$FindBin::Bin/../bin/cpangit-server",
+         "--git-dir=$dir", '--path-base=/pan', ($enabled? ('--index-branches') : ()), 'get', '/pan/');
+      open my $pipe, '-|', @args or die "start cpangit-server: $!";
+      my $html= do { local $/; <$pipe> };
+      close $pipe;
+      is( $?, 0, "cpangit-server get succeeds (index_branches=$enabled)" );
+      my $dom= Mojo::DOM->new($html);
+      is( $dom->find('#branch-index li')->size, $enabled? 3 : 0,
+         'command-line option controls branch listing' );
+   }
+};
 
 subtest all_branches => sub {
    my $mtree= CPAN::InGit::MutableTree->new(parent => $cpan_repo);

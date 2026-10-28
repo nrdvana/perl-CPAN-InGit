@@ -18,6 +18,9 @@ use Log::Any '$log';
 use Archive::Tar;
 use IO::Compress::Gzip qw( gzip $GzipError );
 use CPAN::InGit;
+use File::ShareDir ();
+use Mojo::File 'path';
+use Mojo::Loader 'data_section';
 use Mojo::Base 'Mojolicious::Controller';
 use v5.36;
 
@@ -48,6 +51,11 @@ creating an ArchiveTree object on every request.
 If true, this prevents serving files from a Git::Raw tree which is not the HEAD of a branch.
 By default, any Git sha-1, tag, or branch name may be used so long as it references a tree that
 meets the requirements for an ArchiveTree.
+
+=attribute index_branches
+
+If true, list the available local CPAN archive branches on the repository index.
+Disabled by default; only applies when serving multiple trees.
 
 =cut
 
@@ -88,6 +96,16 @@ sub branch_cache($c) {
 }
 
 sub branch_head_only($c) { $c->stash('branch_head_only') }
+sub index_branches($c) { $c->stash('index_branches') }
+
+sub _share_dir {
+   state $dir= do {
+      my $relative= path(__FILE__)->sibling('..', '..', '..', 'share');
+      -f $relative->child('archive_tree_index.html.ep')? $relative->realpath
+         : path(File::ShareDir::dist_dir('CPAN-InGit'));
+   };
+   return $dir;
+}
 
 sub _new_cache {
    # the 'recent_limit' feature was added in 0.20
@@ -113,6 +131,7 @@ extension .meta and may also optionally be unpacked at a directory of the same n
 
 Summary:
 
+  /                                                       # repository index
   /:branch/modules/02packages.details.txt                 # index of the mirror
   /:branch/authors/id/D/DP/DPARIS/Crypt-DES-2.07.tar.gz   # copy of upstream
   /:branch/authors/id/D/DP/DPARIS/Crypt-DES-2.07.meta     # extracted metadata
@@ -127,12 +146,15 @@ Summary:
   # %options:
   #   archive_tree => $ArchiveTree_obj,
   #   branch_cache => $branch_cache,
+  #   index_branches => 1, # optionally list local CPAN archive branches
 
 This class method sets up the routes for serving the mirror under a provided route.
 C<$route> is the route under which you want to serve the 'PAN.
 
-If you specify 'branch', that branch will be directly mounted at the route without the '/:branch'
+If you specify 'archive_tree', that tree will be directly mounted at the route without the '/:branch'
 selector portion of the paths.
+Otherwise, the route's root serves a repository index; C<index_branches> enables
+branch links on that page and defaults to false.
 
 =cut
 
@@ -146,11 +168,37 @@ sub mount($class, $base_route, $cpan_repo, %options) {
       $options{branch_cache} //= $class->_new_cache;
    }
    $base_route= $base_route->to(namespace => '', controller => $class, cpan_repo => $cpan_repo, %options);
+   $base_route->get('/')->to(action => 'serve_repo_index') unless $atree;
    my $tree_route= $atree? $base_route
       : $base_route->any('/:branch_name');
    $tree_route->get('/modules/02packages.details', [ format => ['txt','txt.gz'] ])
       ->to(action => 'serve_package_details');
    $tree_route->get('/authors/id/*author_path')->to(action => 'serve_author_file');
+}
+
+=method serve_repo_index
+
+Serve the repository landing page.  Local branches containing CPAN configuration
+and a package index are listed only when C<index_branches> is enabled in the stash.
+
+=cut
+
+sub serve_repo_index($c) {
+   my @branches;
+   my $index_branches= $c->index_branches // 0;
+   if ($index_branches) {
+      my $base= $c->url_for->query(undef);
+      my $base_path= $base->path->to_string =~ s{/*$}{/}r;
+      for my $branch (sort { $a->shorthand cmp $b->shorthand } $c->cpan_repo->git_repo->branches('local')) {
+         my $tree= $branch->peel('tree');
+         next unless $tree->entry_bypath('cpan_ingit.json')
+            && $tree->entry_bypath('modules/02packages.details.txt');
+         my $name= $branch->shorthand;
+         push @branches, { name => $name, url => $base->clone->path($base_path.Mojo::Util::url_escape($name).'/') };
+      }
+   }
+   $c->render(inline => $c->_share_dir->child('repo_index.html.ep')->slurp('UTF-8'), handler => 'ep', format => 'html',
+      index_branches => $index_branches, branches => \@branches);
 }
 
 =method check_branch_exists
