@@ -30,7 +30,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function setup({modules, complete = false, filter = '', next_after = null, tree = 'tree1'}) {
   const elements = Object.fromEntries(['cpan-index', 'module-filter', 'module-rows',
-    'module-status', 'load-more', 'module-filter-form', 'check-cves', 'only-cves',
+    'module-status', 'load-more', 'load-all', 'module-filter-form', 'check-cves', 'only-cves',
     'only-cves-label', 'cve-state', 'cve-spinner', 'cve-message', 'cve-column'].map(id => [id, new Element()]));
   for (const id of ['check-cves', 'only-cves-label', 'cve-state', 'cve-column']) elements[id].hidden = true;
   elements['only-cves'].checked = true;
@@ -64,7 +64,8 @@ function setup({modules, complete = false, filter = '', next_after = null, tree 
     type(value) { elements['module-filter'].value = value; elements['module-filter'].fire('input'); },
     async flush() { const callbacks = [...timers.values()]; timers.clear(); callbacks.forEach(fn => fn()); await tick(); },
     names() { return elements['module-rows'].children.filter(tr => !tr.hidden).map(tr => tr.children[0].textContent); },
-    more() { elements['load-more'].fire('click'); }
+    more() { elements['load-more'].fire('click'); },
+    all() { elements['load-all'].fire('click'); }
   };
 }
 
@@ -149,6 +150,81 @@ async function run() {
   await errors.flush();
   assert.equal(errors.requests.length, 2, 'can fetch again after an error');
 
+  const bulk = setup({modules: [row('A')], next_after: 'A'});
+  bulk.all();
+  assert.equal(bulk.requests.length, 1, 'Load all starts a single request');
+  assert.equal(bulk.elements['load-all'].textContent, 'Stop');
+  assert.equal(bulk.elements['load-all'].disabled, false, 'Stop stays clickable during fetch');
+  assert.equal(bulk.elements['load-more'].disabled, true);
+  bulk.more();
+  assert.equal(bulk.requests.length, 1, 'Load more cannot start a concurrent request');
+  bulk.requests[0].respond({modules: [row('B')], filter: '', tree: 'tree1', complete: false,
+    next_after: 'B', previous_before: 'B'});
+  await tick();
+  assert.equal(bulk.requests.length, 2, 'Load all fetches the next page sequentially');
+  assert.equal(bulk.requests[1].url.searchParams.get('after'), 'B');
+  assert.match(bulk.elements['module-status'].textContent, /2 loaded/, 'progress reports accumulated rows');
+  bulk.requests[1].respond({modules: [row('C')], filter: '', tree: 'tree1', complete: false,
+    next_after: null, previous_before: 'C'});
+  await tick();
+  assert.deepEqual(bulk.names(), ['A', 'B', 'C'], 'Load all accumulates every page');
+  assert.equal(bulk.elements['load-all'].hidden, true);
+  assert.equal(bulk.elements['load-more'].hidden, true);
+  bulk.type('B');
+  await bulk.flush();
+  assert.equal(bulk.requests.length, 2, 'completed bulk results can be filtered locally');
+  assert.deepEqual(bulk.names(), ['B']);
+
+  const stopped = setup({modules: [row('A')], next_after: 'A'});
+  stopped.all();
+  stopped.all();
+  assert.equal(stopped.requests.length, 1, 'two quick clicks start and stop one request');
+  assert.equal(stopped.requests[0].options.signal.aborted, true, 'Stop aborts the active fetch');
+  assert.equal(stopped.elements['load-all'].textContent, 'Load all');
+  assert.deepEqual(stopped.names(), ['A']);
+  stopped.requests[0].respond({modules: [row('Ignored')], filter: '', tree: 'tree1', complete: false,
+    next_after: 'Ignored', previous_before: 'Ignored'});
+  await tick();
+  assert.deepEqual(stopped.names(), ['A'], 'a stopped request cannot append late results');
+  assert.equal(stopped.requests.length, 1, 'stopped loop does not continue');
+  stopped.all();
+  assert.equal(stopped.requests[1].url.searchParams.get('after'), 'A', 'can resume from the retained boundary');
+  stopped.requests[1].respond({modules: [row('B')], filter: '', tree: 'tree1', complete: false,
+    next_after: 'B', previous_before: 'B'});
+  await tick();
+  assert.equal(stopped.requests.length, 3);
+  stopped.all();
+  assert.equal(stopped.requests[2].options.signal.aborted, true);
+  assert.deepEqual(stopped.names(), ['A', 'B'], 'Stop preserves successfully loaded pages');
+  stopped.all();
+  assert.equal(stopped.requests[3].url.searchParams.get('after'), 'B');
+  stopped.requests[3].respond({modules: [row('C')], filter: '', tree: 'tree1', complete: false,
+    next_after: null, previous_before: 'C'});
+  await tick();
+  assert.deepEqual(stopped.names(), ['A', 'B', 'C'], 'resuming avoids gaps and duplicates');
+
+  const bulkFilter = setup({modules: [row('A')], next_after: 'A'});
+  bulkFilter.all();
+  bulkFilter.type('different');
+  assert.equal(bulkFilter.requests[0].options.signal.aborted, true, 'changing the filter aborts bulk loading');
+  await bulkFilter.flush();
+  bulkFilter.requests[0].respond({modules: [row('Ignored')], filter: '', tree: 'tree1', complete: false,
+    next_after: 'Ignored', previous_before: 'Ignored'});
+  bulkFilter.requests[1].respond({modules: [row('Different')], filter: 'different', tree: 'tree1', complete: true,
+    next_after: null, previous_before: null});
+  await tick();
+  assert.equal(bulkFilter.requests.length, 2, 'old bulk loop cannot continue with the new filter');
+  assert.deepEqual(bulkFilter.names(), ['Different']);
+
+  const bulkError = setup({modules: [row('A')], next_after: 'A'});
+  bulkError.all();
+  bulkError.requests[0].respondError();
+  await tick();
+  assert.equal(bulkError.requests.length, 1, 'an error stops the fetch loop');
+  assert.equal(bulkError.elements['load-all'].textContent, 'Load all');
+  assert.equal(bulkError.elements['load-all'].disabled, false, 'bulk loading can be retried after an error');
+  assert.match(bulkError.elements['module-status'].textContent, /Could not load/);
+
   const advisoryFeed = JSON.stringify({Example: [{cpansa_id: 'CPANSA-Example-2026-01',
     cves: ['CVE-2026-0001', 'CVE-2026-0002'], affected_versions: ['<2.00']},
     {cpansa_id: 'CPANSA-Example-2026-02', cves: ['CVE-2026-0001'], affected_versions: ['<2.00']}]});
@@ -187,7 +263,7 @@ async function run() {
   assert.deepEqual(cves.names(), ['Bundled::Affected', 'Unaffected'], 'checkbox can show all rows');
   cves.elements['only-cves'].checked = true;
   cves.elements['only-cves'].fire('change');
-  cves.more();
+  cves.all();
   cves.requests[1].respond({modules: [row('New::Affected'), row('New::Unaffected', '1.00',
     'L/LO/LOCAL/Example-3.00.tar.gz')], filter: '', tree: 'tree1', complete: false,
     next_after: null, previous_before: 'New::Affected'});

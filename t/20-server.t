@@ -131,6 +131,9 @@ subtest all_branches => sub {
       ->element_exists('.filter-controls #cve-state[hidden] #cve-spinner')
       ->element_exists('script[src="/~static/cpan_cves.js"][defer]')
       ->element_exists('thead th:nth-child(3)#cve-column[hidden]')
+      ->element_exists('.module-progress #module-status')
+      ->element_exists('.module-progress #load-more[hidden]')
+      ->element_exists('.module-progress #load-all[hidden]')
       ->element_count_is('#module-rows td.cve-reports[hidden]', 9)
       ->text_is('#commit-date', gmtime($initial_commit->time)->strftime('%a, %d %b %Y %H:%M:%S GMT'))
       ->text_is('#index-updated', 'Wed, 19 Nov 2025 23:29:01 GMT')
@@ -185,9 +188,11 @@ subtest module_pagination => sub {
    $mtree->set_path('cpan_ingit.json', \'{}');
    $mtree->commit('Large package index', create_branch => 'large');
    my $t= Test::Mojo->new('Mojolicious');
-   CPAN::InGit::Server->mount($t->app->routes->any('/pan'), $cpan_repo);
+   CPAN::InGit::Server->mount($t->app->routes->any('/pan'), $cpan_repo, module_index_max_rows => 500);
 
    $t->get_ok('/pan/large')->status_is(200)->element_count_is('#module-rows tr', 500)
+      ->element_exists('.module-progress #load-more:not([hidden])')
+      ->element_exists('.module-progress #load-all:not([hidden])')
       ->element_exists('main[data-json-url="/pan/large/modules/"]')
       ->element_exists('script[src="/~static/archive_tree_index.js"]');
    $t->get_ok('/pan/large/modules/')->status_is(200)
@@ -221,7 +226,7 @@ subtest module_pagination => sub {
 
    my $fixed= Test::Mojo->new('Mojolicious');
    CPAN::InGit::Server->mount($fixed->app->routes->any('/mirror'), $cpan_repo,
-      archive_tree => $cpan_repo->get_archive_tree('large'));
+      archive_tree => $cpan_repo->get_archive_tree('large'), module_index_max_rows => 500);
    $fixed->get_ok('/mirror/')->status_is(200)->element_count_is('#module-rows tr', 500)
       ->element_exists('main[data-json-url="/mirror/modules/"]');
    $fixed->get_ok('/mirror/modules/?filter=m1001')->status_is(200)
@@ -269,7 +274,7 @@ subtest index_variants => sub {
    $escape->commit('Untrusted index content', create_branch => 'escape');
    $t->get_ok(Mojo::URL->new('/escape/')->query(filter => '<b>'))->status_is(200)
       ->element_count_is('#module-rows tr', 1)->element_count_is('#module-rows b', 0)
-      ->text_is('#module-rows tr td', 'Example::<b>')
+      ->text_is('#module-rows tr td span', 'Example::<b>')
       ->element_exists('input[value="<b>"]');
 };
 

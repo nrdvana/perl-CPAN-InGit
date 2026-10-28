@@ -6,6 +6,7 @@
   const body = document.getElementById('module-rows');
   const status = document.getElementById('module-status');
   const more = document.getElementById('load-more');
+  const all = document.getElementById('load-all');
   const checkCves = document.getElementById('check-cves');
   const onlyCves = document.getElementById('only-cves');
   const onlyCvesLabel = document.getElementById('only-cves-label');
@@ -28,6 +29,16 @@
   let timer;
   let controller;
   let loading = false;
+  let loadingAll = false;
+
+  function updatePagination() {
+    const filterChanged = input.value !== source.filter;
+    more.hidden = !source.next_after;
+    more.disabled = loading || loadingAll || filterChanged;
+    all.hidden = source.complete && !loadingAll;
+    all.disabled = !loadingAll && (loading || filterChanged);
+    all.textContent = loadingAll ? 'Stop' : 'Load all';
+  }
 
   function render() {
     cveColumn.hidden = !cveIndex;
@@ -73,15 +84,14 @@
     status.textContent = cveIndex
       ? `${affected} affected of ${source.modules.length} loaded modules.${source.next_after ? ' Load more to check additional modules.' : ''}`
       : `Showing ${source.modules.length} modules${source.complete ? ' (all matches).' : '.'}`;
-    more.hidden = !source.next_after;
-    more.disabled = loading;
+    updatePagination();
   }
 
   async function requestPage(append, token) {
     controller = new AbortController();
     loading = true;
-    more.disabled = true;
-    status.textContent = 'Loading modules…';
+    updatePagination();
+    status.textContent = `Loading modules… (${source.modules.length} loaded)`;
     const url = new URL(root.dataset.jsonUrl, document.baseURI);
     url.searchParams.set('filter', input.value);
     if (append) url.searchParams.set('after', source.next_after);
@@ -89,12 +99,11 @@
       const response = await fetch(url, {signal: controller.signal, headers: {Accept: 'application/json'}});
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const page = await response.json();
-      if (token !== revision) return;
+      if (token !== revision) return false;
       // A branch may advance between pages. Restart rather than combine different trees.
       if (append && page.tree !== source.tree) {
         completeCache = null;
-        await requestPage(false, token);
-        return;
+        return requestPage(false, token);
       }
       if (append) {
         page.modules = source.modules.concat(page.modules);
@@ -106,11 +115,13 @@
       if (page.complete) completeCache = page;
       loading = false;
       render();
+      return true;
     } catch (error) {
-      if (token !== revision || error.name === 'AbortError') return;
+      if (token !== revision || error.name === 'AbortError') return false;
       loading = false;
-      more.disabled = input.value !== source.filter;
+      updatePagination();
       status.textContent = 'Could not load modules. Please try again.';
+      return false;
     }
   }
 
@@ -131,7 +142,10 @@
     const token = ++revision;
     clearTimeout(timer);
     if (controller) controller.abort();
+    loadingAll = false;
     more.disabled = true;
+    all.disabled = true;
+    all.textContent = 'Load all';
     timer = setTimeout(() => applyFilter(token), 150);
   }
   input.addEventListener('input', scheduleFilter);
@@ -140,7 +154,35 @@
     scheduleFilter();
   });
   more.addEventListener('click', () => {
-    if (!loading && source.next_after && input.value === source.filter) requestPage(true, ++revision);
+    if (!loading && !loadingAll && source.next_after && input.value === source.filter) requestPage(true, ++revision);
+  });
+  all.addEventListener('click', async () => {
+    if (loadingAll) {
+      ++revision;
+      loadingAll = false;
+      loading = false;
+      if (controller) controller.abort();
+      render();
+      return;
+    }
+    if (loading || source.complete || input.value !== source.filter) return;
+    const token = ++revision;
+    loadingAll = true;
+    updatePagination();
+    try {
+      // If the initial view started at a boundary, restart to include earlier matches.
+      if (source.previous_before || !source.next_after) {
+        if (!await requestPage(false, token)) return;
+      }
+      while (token === revision && !source.complete && source.next_after) {
+        if (!await requestPage(true, token)) break;
+      }
+    } finally {
+      if (token === revision) {
+        loadingAll = false;
+        updatePagination();
+      }
+    }
   });
   onlyCves.addEventListener('change', render);
   checkCves.hidden = false;
