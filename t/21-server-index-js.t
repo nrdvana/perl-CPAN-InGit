@@ -6,6 +6,9 @@ use v5.36;
 
 my ($node)= grep -x $_, map File::Spec->catfile($_, 'node'), File::Spec->path;
 plan skip_all => 'Node.js is needed to test the index JavaScript' unless $node;
-is( system($node, "$FindBin::Bin/js/server-index.cjs", "$FindBin::Bin/../share/public/archive_tree_index.js"),
+is( system($node, "$FindBin::Bin/js/cpan-cves.cjs", "$FindBin::Bin/../share/public/cpan_cves.js"),
+   0, 'CPANSA feed and Perl version matching' );
+is( system($node, "$FindBin::Bin/js/server-index.cjs", "$FindBin::Bin/../share/public/archive_tree_index.js",
+      "$FindBin::Bin/../share/public/cpan_cves.js"),
    0, 'browser pagination and filtering behavior' );
 done_testing;

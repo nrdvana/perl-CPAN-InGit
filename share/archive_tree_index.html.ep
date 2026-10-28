@@ -8,13 +8,23 @@
     body { font: 1rem/1.5 system-ui, sans-serif; max-width: 80rem; margin: 2rem auto; padding: 0 1rem; color: #172331; }
     h1 { margin-bottom: .5rem; }
     dt { font-weight: 600; } dd { margin: 0 0 .5rem; }
-    input { font: inherit; padding: .5rem; width: min(30rem, 90%); }
+    input[type="search"] { font: inherit; padding: .5rem; width: min(30rem, 90%); flex: 1 1 15rem; }
     button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
+    [hidden] { display: none !important; }
+    .filter-controls { display: flex; align-items: center; flex-wrap: wrap; gap: .75rem; }
+    .cve-state { display: inline-flex; align-items: center; gap: .5rem; }
+    .cve-spinner { width: 1em; height: 1em; border: 2px solid #c7cfd7; border-top-color: #165ca2; border-radius: 50%; animation: cve-spin .7s linear infinite; }
+    @keyframes cve-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .cve-spinner { animation: none; } }
+    tr.cve-affected { background: #ffe8e8; }
+    tr.cve-affected td:nth-child(2) { color: #d00000; font-weight: 700; }
+    .cve-report { display: block; white-space: nowrap; }
     .table-scroll { overflow-x: auto; margin-bottom: 1rem; }
     table { border-collapse: collapse; width: 100%; text-align: left; }
     th, td { border-bottom: 1px solid #d9e0e6; padding: .5rem; }
     th { background: #eef2f6; } a { color: #165ca2; }
   </style>
+  <script src="<%= $cve_script_url %>" defer></script>
   <script src="<%= $script_url %>" defer></script>
 </head>
 <body>
@@ -30,8 +40,16 @@
     </dl>
     <form method="get" id="module-filter-form">
       <label for="module-filter">Filter modules, versions, or distribution paths</label><br>
-      <input id="module-filter" name="filter" type="search" value="<%= $module_page->{filter} %>" autocomplete="off" aria-describedby="filter-help">
-      <noscript><button type="submit">Filter</button></noscript>
+      <div class="filter-controls">
+        <input id="module-filter" name="filter" type="search" value="<%= $module_page->{filter} %>" autocomplete="off" aria-describedby="filter-help">
+        <noscript><button type="submit">Filter</button></noscript>
+        <button id="check-cves" type="button" hidden>Check CVEs</button>
+        <span id="cve-state" class="cve-state" role="status" aria-live="polite" hidden>
+          <span id="cve-spinner" class="cve-spinner" aria-hidden="true"></span>
+          <span id="cve-message"></span>
+        </span>
+        <label id="only-cves-label" hidden><input id="only-cves" type="checkbox" checked> Only CVEs</label>
+      </div>
     </form>
     <p id="filter-help">Case-insensitive text search across each package row.</p>
     <p id="module-status" role="status" aria-live="polite">
@@ -39,11 +57,12 @@
     </p>
     <div class="table-scroll">
       <table>
-        <thead><tr><th scope="col">Module</th><th scope="col">Version</th><th scope="col">Distribution</th></tr></thead>
+        <thead><tr><th scope="col">Module</th><th scope="col">Version</th><th id="cve-column" scope="col" hidden>CVEs</th><th scope="col">Distribution</th></tr></thead>
         <tbody id="module-rows">
 % for my $row ($module_page->{modules}->@*) {
           <tr data-row="<%= JSON::PP->new->encode($row) %>">
             <td><%= $row->{name} %></td><td><%= $row->{version} %></td>
+            <td class="cve-reports" hidden></td>
             <td><a href="<%= $authors_url %><%= join '/', map Mojo::Util::url_escape($_), split '/', $row->{path} %>"><%= $row->{path} %></a></td>
           </tr>
 % }

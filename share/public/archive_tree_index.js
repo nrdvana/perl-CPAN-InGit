@@ -6,6 +6,15 @@
   const body = document.getElementById('module-rows');
   const status = document.getElementById('module-status');
   const more = document.getElementById('load-more');
+  const checkCves = document.getElementById('check-cves');
+  const onlyCves = document.getElementById('only-cves');
+  const onlyCvesLabel = document.getElementById('only-cves-label');
+  const cveState = document.getElementById('cve-state');
+  const cveSpinner = document.getElementById('cve-spinner');
+  const cveMessage = document.getElementById('cve-message');
+  const cveColumn = document.getElementById('cve-column');
+  let cveIndex = null;
+  let checkingCves = false;
   let source = {
     filter: root.dataset.filter,
     tree: root.dataset.tree,
@@ -21,14 +30,37 @@
   let loading = false;
 
   function render() {
+    cveColumn.hidden = !cveIndex;
     const fragment = document.createDocumentFragment();
+    let affected = 0;
     for (const row of source.modules) {
       const tr = document.createElement('tr');
+      const advisories = cveIndex ? CPANInGitCves.findAdvisories(cveIndex, row) : [];
+      if (advisories.length) {
+        ++affected;
+        tr.className = 'cve-affected';
+      }
+      tr.hidden = !!cveIndex && onlyCves.checked && !advisories.length;
       for (const value of [row.name, row.version]) {
         const td = document.createElement('td');
         td.textContent = value;
         tr.append(td);
       }
+      if (advisories.length) tr.children[1].title = advisories.flatMap(advisory => advisory.ids).join(', ');
+      const reports = document.createElement('td');
+      reports.className = 'cve-reports';
+      reports.hidden = !cveIndex;
+      const ids = [...new Set(advisories.flatMap(advisory => advisory.ids))];
+      for (const id of ids.filter(id => /^CVE-\d{4}-\d{4,}$/.test(id))) {
+        const report = document.createElement('a');
+        report.className = 'cve-report';
+        report.textContent = id;
+        report.href = 'https://www.cve.org/CVERecord?id=' + encodeURIComponent(id);
+        reports.append(report);
+      }
+      // Some CPANSA advisories have no assigned CVE number.
+      if (advisories.length && !reports.children.length) reports.textContent = ids.join(', ');
+      tr.append(reports);
       const td = document.createElement('td');
       const link = document.createElement('a');
       link.textContent = row.path;
@@ -38,7 +70,9 @@
       fragment.append(tr);
     }
     body.replaceChildren(fragment);
-    status.textContent = `Showing ${source.modules.length} modules${source.complete ? ' (all matches).' : '.'}`;
+    status.textContent = cveIndex
+      ? `${affected} affected of ${source.modules.length} loaded modules.${source.next_after ? ' Load more to check additional modules.' : ''}`
+      : `Showing ${source.modules.length} modules${source.complete ? ' (all matches).' : '.'}`;
     more.hidden = !source.next_after;
     more.disabled = loading;
   }
@@ -107,5 +141,27 @@
   });
   more.addEventListener('click', () => {
     if (!loading && source.next_after && input.value === source.filter) requestPage(true, ++revision);
+  });
+  onlyCves.addEventListener('change', render);
+  checkCves.hidden = false;
+  checkCves.addEventListener('click', async () => {
+    if (checkingCves || cveIndex) return;
+    checkingCves = true;
+    checkCves.hidden = true;
+    cveState.hidden = false;
+    cveSpinner.hidden = false;
+    try {
+      cveIndex = await CPANInGitCves.download(message => { cveMessage.textContent = message; });
+      onlyCves.checked = true;
+      onlyCvesLabel.hidden = false;
+      cveState.hidden = true;
+      render();
+    } catch (error) {
+      checkCves.hidden = false;
+      cveSpinner.hidden = true;
+      cveMessage.textContent = 'Could not load the CVE list. Please try again.';
+    } finally {
+      checkingCves = false;
+    }
   });
 })();

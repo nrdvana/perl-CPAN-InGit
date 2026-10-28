@@ -125,6 +125,13 @@ subtest all_branches => sub {
 
    $t->get_ok('/test/')->status_is(200)
       ->element_exists('input[name="filter"]')
+      ->element_exists('.filter-controls input#module-filter')
+      ->element_exists('.filter-controls button#check-cves[type="button"]')
+      ->element_exists('.filter-controls #only-cves-label[hidden] input#only-cves[checked]')
+      ->element_exists('.filter-controls #cve-state[hidden] #cve-spinner')
+      ->element_exists('script[src="/~static/cpan_cves.js"][defer]')
+      ->element_exists('thead th:nth-child(3)#cve-column[hidden]')
+      ->element_count_is('#module-rows td.cve-reports[hidden]', 9)
       ->text_is('#commit-date', gmtime($initial_commit->time)->strftime('%a, %d %b %Y %H:%M:%S GMT'))
       ->text_is('#index-updated', 'Wed, 19 Nov 2025 23:29:01 GMT')
       ->element_count_is('#module-rows tr', 9)
@@ -143,6 +150,8 @@ subtest all_branches => sub {
    is( $t->tx->res->body, slurp("$FindBin::Bin/../share/public/archive_tree_index.js"), 'JavaScript served verbatim' );
    my $etag= $t->tx->res->headers->etag;
    $t->get_ok('/~static/archive_tree_index.js' => {'If-None-Match' => $etag})->status_is(304);
+   $t->get_ok('/~static/cpan_cves.js')->status_is(200)->content_type_like(qr/javascript/);
+   is( $t->tx->res->body, slurp("$FindBin::Bin/../share/public/cpan_cves.js"), 'CVE library served verbatim' );
    $t->get_ok('/~static/archive_tree_index.html.ep')->status_is(404);
    $t->get_ok('/missing/')->status_is(404);
    $t->get_ok('/missing/modules/')->status_is(404);

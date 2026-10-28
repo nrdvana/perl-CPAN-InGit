@@ -57,6 +57,11 @@ meets the requirements for an ArchiveTree.
 If true, list the available local CPAN archive branches on the repository index.
 Disabled by default; only applies when serving multiple trees.
 
+=attribute module_index_max_rows
+
+Set this to the maximum number of rows to return from the JSON endpoint that searches modules,
+used by the per-tree index page.
+
 =cut
 
 sub cpan_repo($c) { $c->stash('cpan_repo') }
@@ -97,6 +102,7 @@ sub branch_cache($c) {
 
 sub branch_head_only($c) { $c->stash('branch_head_only') }
 sub index_branches($c) { $c->stash('index_branches') }
+sub module_index_max_rows($c) { $c->stash('module_index_max_rows') // 5000 }
 
 sub _share_dir {
    state $dir= do {
@@ -224,7 +230,7 @@ sub serve_repo_index($c) {
 =method serve_index
 
 Serve an HTML index for a CPAN tree, including its commit date, package index date,
-and the first 500 matching modules.
+and the first 5000 matching modules.
 
 =method serve_module_list
 
@@ -266,12 +272,13 @@ sub _module_page($c, $index) {
    my @matches= grep index(lc $_->{text}, $needle) >= 0, $index->{rows}->@*;
    my ($after, $before)= map $c->param($_), qw(after before);
    my ($start, $end)= (0, scalar @matches);
+   my $max= $c->module_index_max_rows;
    if (defined $before) {
       --$end while $end && $matches[$end-1]{name} ge $before;
-      $start= $end > 500? $end-500 : 0;
+      $start= $end > $max? $end-$max : 0;
    } else {
       ++$start while $start < $end && defined $after && $matches[$start]{name} le $after;
-      $end= $start+500 if $end > $start+500;
+      $end= $start+$max if $end > $start+$max;
    }
    my @rows= @matches[$start .. $end-1];
    return {
@@ -312,6 +319,7 @@ sub serve_index($c) {
       tree_name => $c->branch_name // $atree->name,
       json_url => $base->clone->path($base_path.'modules/'),
       script_url => $c->url_for('/~static/archive_tree_index.js'),
+      cve_script_url => $c->url_for('/~static/cpan_cves.js'),
       authors_url => $base->clone->path($base_path.'authors/id/'));
 }
 
