@@ -13,8 +13,9 @@ RUN apt-get update \
       liblog-any-perl liblog-any-adapter-tap-perl \
       libtest-pod-coverage-perl libtest-pod-perl libpod-coverage-trustpod-perl \
       libdist-zilla-perl libdist-zilla-plugin-git-perl \
+      nodejs \
  && rm -rf /var/lib/apt/lists \
- && cpanm Log::Any::Adapter::MojoLog \
+ && cpanm Log::Any::Adapter::MojoLog Dist::Zilla::Plugin::ShareDir \
  && rm -rf ~/.cpanm
 
 ENTRYPOINT ["/usr/bin/env"]

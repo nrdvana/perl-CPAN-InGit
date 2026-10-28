@@ -204,6 +204,7 @@ sub get_archive_tree($self, $branch_or_tag_or_id) {
    return $class->new(
       parent => $self,
       tree => $tree,
+      name => $branch? $branch->shorthand : "$branch_or_tag_or_id",
       use_workdir => $use_workdir,
       (branch => $branch)x!!$branch,
    );
@@ -266,12 +267,12 @@ sub lookup_tree($self, $branch_or_tag_or_id) {
    } elsif ($origin= eval { Git::Raw::Tag->lookup($repo, $branch_or_tag_or_id) }) {
       $tree= $origin->peel('tree');
    } elsif (my $obj= eval { $repo->lookup($branch_or_tag_or_id) }) {
-      if ($obj->type == Git::Raw::Object::COMMIT()) {
+      if ($obj->isa('Git::Raw::Commit')) {
          $origin= Git::Raw::Commit->lookup($repo, $obj->id);
          $tree= $origin->tree;
-      } elsif ($obj->type == Git::Raw::Object::TREE()) {
+      } elsif ($obj->isa('Git::Raw::Tree')) {
          $tree= Git::Raw::Tree->lookup($repo, $obj->id);
-      } elsif ($obj->type == Git::Raw::Object::TAG()) {
+      } elsif ($obj->isa('Git::Raw::Tag')) {
          $origin= Git::Raw::Tag->lookup($repo, $obj->id);
          $tree= $origin->target;
       }

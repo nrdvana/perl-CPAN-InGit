@@ -35,7 +35,8 @@ extends 'CPAN::InGit::MutableTree';
 =attribute name
 
 A human-readable name for this ArchiveTree instance.  Defaults to the branch name, when loaded
-from a branch.
+from a branch.  When loaded by L<CPAN::InGit/get_archive_tree> it is set to tag or sha1 if a
+branch is not available.
 
 =attribute config
 

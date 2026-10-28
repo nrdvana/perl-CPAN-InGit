@@ -20,7 +20,7 @@ use IO::Compress::Gzip qw( gzip $GzipError );
 use CPAN::InGit;
 use File::ShareDir ();
 use Mojo::File 'path';
-use Mojo::Loader 'data_section';
+use Mojolicious::Static;
 use Mojo::Base 'Mojolicious::Controller';
 use v5.36;
 
@@ -132,11 +132,14 @@ extension .meta and may also optionally be unpacked at a directory of the same n
 Summary:
 
   /                                                       # repository index
+  /~static/...                                            # static files served publicly
+  /:branch/                                               # browsable tree index
+  /:branch/modules/?filter=TEXT&after=MODULE              # filtered module list
   /:branch/modules/02packages.details.txt                 # index of the mirror
   /:branch/authors/id/D/DP/DPARIS/Crypt-DES-2.07.tar.gz   # copy of upstream
   /:branch/authors/id/D/DP/DPARIS/Crypt-DES-2.07.meta     # extracted metadata
-  /:branch/authors/id/L/LO/LOCAL/Crypt-DES-2.07_01/...         # untarred customized dist
-  /:branch/authors/id/L/LO/LOCAL/Crypt-DES-2.07_01.meta        # untarred customized dist's metadata
+  /:branch/authors/id/L/LO/LOCAL/Crypt-DES-2.07_01/...    # untarred customized dist
+  /:branch/authors/id/L/LO/LOCAL/Crypt-DES-2.07_01.meta   # untarred customized dist's metadata
 
 =head2 mount
 
@@ -155,10 +158,23 @@ If you specify 'archive_tree', that tree will be directly mounted at the route w
 selector portion of the paths.
 Otherwise, the route's root serves a repository index; C<index_branches> enables
 branch links on that page and defaults to false.
+Files in C<share/public> are served verbatim under C</~static/> using Mojo's static
+file handler, regardless of the mount path.
 
 =cut
 
 sub mount($class, $base_route, $cpan_repo, %options) {
+   my $root= $base_route->root;
+   unless ($root->{_cpan_ingit_public}) {
+      my $static= Mojolicious::Static->new(
+         paths => [$class->_share_dir->child('public')->to_string], prefix => '/~static');
+      $root->get('/~static/*asset')->to(cb => sub($c) {
+         $static->dispatch($c) || $c->reply->not_found;
+      });
+      # Static files must take precedence over the catch-all branch index.
+      unshift $root->children->@*, pop $root->children->@*;
+      $root->{_cpan_ingit_public}= $static;
+   }
    my $atree= $options{archive_tree};
    if ($atree) {
       croak "Not an ArchiveTree"
@@ -169,11 +185,15 @@ sub mount($class, $base_route, $cpan_repo, %options) {
    }
    $base_route= $base_route->to(namespace => '', controller => $class, cpan_repo => $cpan_repo, %options);
    $base_route->get('/')->to(action => 'serve_repo_index') unless $atree;
-   my $tree_route= $atree? $base_route
-      : $base_route->any('/:branch_name');
-   $tree_route->get('/modules/02packages.details', [ format => ['txt','txt.gz'] ])
+   # Keep each suffix in the same pattern as the branch wildcard, so Git branch
+   # names containing slashes can be matched without consuming the file path.
+   my $prefix= $atree? '' : '/*branch_name';
+   $base_route->get("$prefix/modules/02packages.details", [ format => ['txt','txt.gz'] ])
       ->to(action => 'serve_package_details');
-   $tree_route->get('/authors/id/*author_path')->to(action => 'serve_author_file');
+   $base_route->get("$prefix/authors/id/*author_path")->to(action => 'serve_author_file');
+   $base_route->get("$prefix/modules/")->to(action => 'serve_module_list');
+   $base_route->get($atree? '/' : $prefix, [ branch_name => qr{.+?(?=/?$)}, format => 0 ])
+      ->to(action => 'serve_index');
 }
 
 =method serve_repo_index
@@ -199,6 +219,100 @@ sub serve_repo_index($c) {
    }
    $c->render(inline => $c->_share_dir->child('repo_index.html.ep')->slurp('UTF-8'), handler => 'ep', format => 'html',
       index_branches => $index_branches, branches => \@branches);
+}
+
+=method serve_index
+
+Serve an HTML index for a CPAN tree, including its commit date, package index date,
+and the first 500 matching modules.
+
+=method serve_module_list
+
+Serve C<modules/> as JSON.  C<filter> is a case-insensitive literal substring matched
+against the entire original 02packages row (module, version, and distribution path).
+C<after> and C<before> are exclusive module-name boundaries; supply at most one.
+Rows are sorted by module name, with at most 500 returned per request.
+
+The response contains C<modules> (objects with C<name>, C<version>, C<path>, and
+C<text>), the applied C<filter>, the Git C<tree> ID, and C<next_after> and
+C<previous_before> cursors (null at either end).  C<complete> is true only when
+this response includes every row matching the filter, including rows outside
+the requested boundary.  A client may then narrow that filter locally.
+
+=cut
+
+sub _module_index($c) {
+   my $atree= $c->archive_tree;
+   my $blob= $atree->package_details_blob;
+   return undef unless $blob;
+   my $index= $atree->{_server_module_index};
+   unless ($index && $index->{blob_id} eq $blob->id) {
+      my ($headers, $body)= split /\r?\n\r?\n/, $blob->content, 2;
+      my ($updated)= $headers =~ /^Last-Updated:\s*([^\r\n]*)/m;
+      my @rows;
+      for my $line (split /\r?\n/, $body // '') {
+         next unless $line =~ /^(\S+)\s+(\S+)\s+(\S+)\s*$/;
+         push @rows, { name => $1, version => $2, path => $3, text => $line };
+      }
+      @rows= sort { $a->{name} cmp $b->{name} } @rows;
+      $index= $atree->{_server_module_index}= { blob_id => $blob->id, updated => $updated, rows => \@rows };
+   }
+   return $index;
+}
+
+sub _module_page($c, $index) {
+   my $filter= $c->param('filter') // '';
+   my $needle= lc $filter;
+   my @matches= grep index(lc $_->{text}, $needle) >= 0, $index->{rows}->@*;
+   my ($after, $before)= map $c->param($_), qw(after before);
+   my ($start, $end)= (0, scalar @matches);
+   if (defined $before) {
+      --$end while $end && $matches[$end-1]{name} ge $before;
+      $start= $end > 500? $end-500 : 0;
+   } else {
+      ++$start while $start < $end && defined $after && $matches[$start]{name} le $after;
+      $end= $start+500 if $end > $start+500;
+   }
+   my @rows= @matches[$start .. $end-1];
+   return {
+      modules => \@rows,
+      filter => $filter,
+      tree => $c->archive_tree->tree->id,
+      complete => $start == 0 && $end == @matches? JSON::PP::true : JSON::PP::false,
+      next_after => @rows && $end < @matches? $rows[-1]{name} : undef,
+      previous_before => @rows && $start > 0? $rows[0]{name} : undef,
+   };
+}
+
+sub serve_module_list($c) {
+   return undef unless $c->check_branch_exists;
+   return $c->render(status => 400, json => { error => 'Supply only one of after and before' })
+      if defined $c->param('after') && defined $c->param('before');
+   my $index= $c->_module_index
+      or return $c->render(status => 404, json => { error => 'No package index in this tree' });
+   $c->render(json => $c->_module_page($index));
+}
+
+sub serve_index($c) {
+   return undef unless $c->check_branch_exists;
+   my $index= $c->_module_index
+      or return $c->render(status => 404, text => 'No package index in this tree');
+   my $atree= $c->archive_tree;
+   my $origin= $atree->branch;
+   (undef, $origin)= $c->cpan_repo->lookup_tree($c->branch_name // $atree->name)
+      unless $origin;
+   $origin= $origin->target while $origin && $origin->isa('Git::Raw::Tag');
+   my $commit= !$origin? undef
+      : $origin->isa('Git::Raw::Commit')? $origin : $origin->peel('commit');
+   my $base= $c->url_for->query(undef);
+   my $base_path= $base->path->to_string =~ s{/*$}{/}r;
+   $c->render(inline => $c->_share_dir->child('archive_tree_index.html.ep')->slurp('UTF-8'), handler => 'ep', format => 'html',
+      module_page => $c->_module_page($index), index_updated => $index->{updated},
+      commit_date => $commit? gmtime($commit->time)->strftime('%a, %d %b %Y %H:%M:%S GMT') : undef,
+      tree_name => $c->branch_name // $atree->name,
+      json_url => $base->clone->path($base_path.'modules/'),
+      script_url => $c->url_for('/~static/archive_tree_index.js'),
+      authors_url => $base->clone->path($base_path.'authors/id/'));
 }
 
 =method check_branch_exists
