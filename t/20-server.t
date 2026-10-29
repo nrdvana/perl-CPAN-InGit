@@ -1,3 +1,4 @@
+BEGIN { $ENV{MOJO_NO_TLS}= 1; }
 use FindBin;
 use lib "$FindBin::Bin/lib";
 use Test2AndUtils;
