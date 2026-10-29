@@ -46,6 +46,7 @@ my %WriteMakefileArgs = (
     "JSON::PP" => 0,
     "Log::Any" => 0,
     "Log::Any::Adapter" => 0,
+    "Log::Any::Adapter::MojoLog" => 0,
     "Module::CPANfile" => 0,
     "Module::CoreList" => 0,
     "Module::Metadata" => 0,
@@ -76,7 +77,7 @@ my %WriteMakefileArgs = (
     "parent" => 0,
     "warnings" => 0
   },
-  "VERSION" => "0.004",
+  "VERSION" => "0.005",
   "test" => {
     "TESTS" => "t/*.t"
   }
@@ -105,6 +106,7 @@ my %FallbackPrereqs = (
   "JSON::PP" => 0,
   "Log::Any" => 0,
   "Log::Any::Adapter" => 0,
+  "Log::Any::Adapter::MojoLog" => 0,
   "Module::CPANfile" => 0,
   "Module::CoreList" => 0,
   "Module::Metadata" => 0,
