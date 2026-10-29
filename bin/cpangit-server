@@ -24,6 +24,11 @@ This command acts as a CPAN file server, either serving all the repo's branches 
 SHA-1 hashes) or serving a single specified branch.  OPTIONS are described below. MOJO_OPTIONS
 control how the server is launched, and are described by `mojo --help`.
 
+Friendly paths such as C</feature/demo/> resolve the shortest existing selector,
+preferring branches over tags and commit IDs at each boundary. Explicit paths
+C</~branch/feature~demo/>, C</~tag/feature~demo/>, and C</~commit/SHA1/>
+select one namespace unambiguously. Slashes in ref names are encoded as C<~>.
+
 =head1 OPTIONS
 
 =over
@@ -95,6 +100,6 @@ if (defined $mount_options{archive_tree}) {
 # The routes for the server controller can be mounted at any sub-path desired.
 # By default, this mounts every possible Git tree which looks like a valid ArchiveTree layout
 # so you can point cpanm to `-M host:/BRANCH_NAME` or `-M host:/SHA-1` or `-M host:/GIT_TAG`
-CPAN::InGit::Server->mount(app->routes->any($base_path), $cpan_repo, %mount_options);
+CPAN::InGit::Server->mount(app->routes->any($base_path), $cpan_repo, app => app, %mount_options);
 
 app->start;

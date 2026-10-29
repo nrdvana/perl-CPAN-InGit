@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title><%= $tree_name %> — CPAN index</title>
+  <title><%= $tree_label %> — CPAN index</title>
   <style>
     body { font: 1rem/1.5 system-ui, sans-serif; max-width: 80rem; margin: 2rem auto; padding: 0 1rem; color: #172331; }
     h1 { margin-bottom: .5rem; }
@@ -68,7 +68,7 @@
       data-complete="<%= $module_page->{complete}? 'true' : 'false' %>"
       data-next-after="<%= $module_page->{next_after} // '' %>"
       data-previous-before="<%= $module_page->{previous_before} // '' %>">
-    <h1><%= $tree_name %></h1>
+    <h1><%= $tree_label %></h1>
     <dl>
       <dt>Commit date</dt><dd id="commit-date"><%= $commit_date // 'Unavailable for this tree' %></dd>
       <dt>02packages.details.txt updated</dt><dd id="index-updated"><%= $index_updated // 'Unknown' %></dd>

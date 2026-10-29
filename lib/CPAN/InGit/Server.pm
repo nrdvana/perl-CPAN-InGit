@@ -32,25 +32,28 @@ Reference to the CPAN::InGit object from which files will be served
 
 Reference to an L<ArchvieTree|CPAN::InGit::ArchvieTree> object.  If set, the controller
 will serve only the tree of this branch from whatever path it was rooted at.  If not set,
-this attribute will be lazy-built from attribute C<branch_name> and cached in C<branch_cache>.
+this attribute will be lazy-built from attribute C<tree_name> and cached in C<tree_cache>.
 The lazy-building of this attribute may return C<undef>, and should be checked I<before>
 dispatching to an action.
 
-=attribute branch_name
+=attribute tree_name
 
-Name of branch to be lazy-loaded by the C<archive_tree> accessor.
+Explicit selector containing two path components: C<~branch/feature~demo>,
+C<~tag/v1.0>, or C<~commit/OBJECT_ID>. Slashes in ref names are encoded as C<~>.
 
-=attribute branch_cache
+=attribute tree_cache
 
-A hashref or L<Tree::RB::XS> object storing a cache of ArchiveTree objects.  This needs to be
-supplied in the stash if you are loading branches by name at runtime, or else it will be
+A hashref storing a cache of ArchiveTree objects.  This needs to be supplied in the stash if
+you are loading branches by name at runtime, or else it will be
 creating an ArchiveTree object on every request.
 
 =attribute branch_head_only
 
 If true, this prevents serving files from a Git::Raw tree which is not the HEAD of a branch.
 By default, any Git sha-1, tag, or branch name may be used so long as it references a tree that
-meets the requirements for an ArchiveTree.
+meets the requirements for an ArchiveTree.  Restricting these to branches-only can help ensure
+that a malicious user can't pollute the cache and create excessive server load by touching every
+tree that ever existed.
 
 =attribute index_branches
 
@@ -66,36 +69,59 @@ used by the per-tree index page.
 
 sub cpan_repo($c) { $c->stash('cpan_repo') }
 
+# Resolve each namespace directly, without falling back to another namespace.
+sub _tree_object($class, $repo, $tree_name, $branch_head_only=0) {
+   return undef unless defined $tree_name
+      && $tree_name =~ m{\A~(branch|tag|commit)/([^/]+)\z};
+   my ($kind, $name)= ($1, $2);
+   return undef if $branch_head_only && $kind ne 'branch';
+   $name =~ tr{~}{/};
+   return eval {
+      $kind eq 'branch'? Git::Raw::Branch->lookup($repo->git_repo, $name, 1)
+      : $kind eq 'tag'? Git::Raw::Reference->lookup("refs/tags/$name", $repo->git_repo)
+      : $name =~ /\A[0-9a-fA-F]{40}\z/? Git::Raw::Commit->lookup($repo->git_repo, $name)
+      : undef;
+   };
+}
+
 sub archive_tree($c) {
    $c->stash->{archive_tree} //= do {
-      my $branch_name= $c->branch_name;
-      my $cache= $c->branch_cache;
-      my $atree= $cache->{$branch_name};
-      if ($atree) {
-         # check whether branch has updated since cached
-         my $current_tree= $c->cpan_repo->lookup_tree($branch_name);
-         unless (defined $current_tree and $atree->tree->id eq $current_tree->id) {
-            delete $cache->{$branch_name};
-            $atree= undef;
-         }
+      my $tree_name= $c->tree_name;
+      my $cache= $c->tree_cache;
+      my $object= $c->_tree_object($c->cpan_repo, $tree_name, $c->branch_head_only);
+      my $current_tree= $object && eval { $c->cpan_repo->lookup_tree($object) };
+      my $atree= $cache->{$tree_name};
+      if ($atree && (!$current_tree || $atree->tree->id ne $current_tree->id)) {
+         delete $cache->{$tree_name};
+         $atree= undef;
       }
-      if (!$atree && ($atree= $c->cpan_repo->get_archive_tree($branch_name))) {
-         if ($c->branch_head_only && !defined $atree->branch) {
-            $c->log->debug("Branch '$branch_name' is not a branch HEAD");
-            $atree= undef;
-         } else {
-            $cache->{$branch_name}= $atree;
+      if (!$atree && $current_tree) {
+         $atree= $c->cpan_repo->get_archive_tree($object);
+         if ($atree) {
+            # reconstruct actual name for ArchiveTree->name attribute
+            (my $name= $tree_name) =~ s{^~[^/]+/}{};
+            $name =~ tr{~}{/};
+            $atree->name($name);
+            $cache->{$tree_name}= $atree;
          }
       }
       $atree;
    };
 }
 
-sub branch_name($c) { $c->stash('branch_name') }
+sub tree_name($c) {
+   my $n= $c->stash('tree_name');
+   return $n if defined $n;
+   # back-compat: check "branch_name"
+   $n= $c->stash('branch_name');
+   return "~branch/".($n =~ tr{/}{~}r) if $n;
+   return undef;
+}
 
-sub branch_cache($c) {
-   $c->stash->{branch_cache} //= do {
-      warn "no branch_cache, creating temporary";
+sub tree_cache($c) {
+   # back-compat: check "branch_cache"
+   $c->stash->{tree_cache} //= $c->stash->{branch_cache} // do {
+      warn "no tree_cache or branch_cache, creating temporary";
       $c->_new_cache
    }
 }
@@ -137,69 +163,148 @@ extension .meta and may also optionally be unpacked at a directory of the same n
 
 Summary:
 
-  /                                                       # repository index
-  /~static/...                                            # static files served publicly
-  /:branch/                                               # browsable tree index
-  /:branch/modules/?filter=TEXT&after=MODULE              # filtered module list
-  /:branch/modules/02packages.details.txt                 # index of the mirror
-  /:branch/authors/id/D/DP/DPARIS/Crypt-DES-2.07.tar.gz   # copy of upstream
-  /:branch/authors/id/D/DP/DPARIS/Crypt-DES-2.07.meta     # extracted metadata
-  /:branch/authors/id/L/LO/LOCAL/Crypt-DES-2.07_01/...    # untarred customized dist
-  /:branch/authors/id/L/LO/LOCAL/Crypt-DES-2.07_01.meta   # untarred customized dist's metadata
+  /                                                 # browsable tree index
+  /modules/?filter=TEXT&after=MODULE                # filtered module list
+  /modules/02packages.details.txt                   # index of the mirror
+  /authors/id/D/DP/DPARIS/Crypt-DES-2.07.tar.gz     # copy of upstream
+  /authors/id/D/DP/DPARIS/Crypt-DES-2.07.meta       # extracted metadata
+  /authors/id/L/LO/LOCAL/Crypt-DES-2.07_01/...      # untarred customized dist
+  /authors/id/L/LO/LOCAL/Crypt-DES-2.07_01.meta     # untarred customized dist's metadata
 
 =head2 mount
 
   my $route= app->routes->any('/pan');
   my $repo= CPAN::InGit->new(git_repo => '/path/to/.git');
-  CPAN::InGit::Server->mount($route, $repo, %options);
+  CPAN::InGit::Server->mount($route, $repo, app => app, %options);
   # %options:
   #   archive_tree => $ArchiveTree_obj,
-  #   branch_cache => $branch_cache,
+  #   tree_cache => $branch_cache,
   #   index_branches => 1, # optionally list local CPAN archive branches
+  #   branch_head_only => 1, # only serve actual branch HEADs
 
 This class method sets up the routes for serving the mirror under a provided route.
 C<$route> is the route under which you want to serve the 'PAN.
+The C<app> option supplies the owning Mojolicious application and is required for
+multi-tree mounts, to install the C<before_routes> path-rewriting hook.
 
-If you specify 'archive_tree', that tree will be directly mounted at the route without the '/:branch'
-selector portion of the paths.
-Otherwise, the route's root serves a repository index; C<index_branches> enables
+If you specify 'archive_tree', that `PAN will be directly mounted at the route.
+Otherwise, all trees (or just branches if you use option C<branch_head_only>) will be mounted
+as:
+
+  /                                                 # repository index
+  /~static/...                                      # static files served publicly
+  /~branch/:branch_name/*tree                       # branch, with '/' replaced by '~'
+  /~tag/:tag_name/*tree                             # tag, with '/' replaced by '~'
+  /~commit/:sha1/*tree                              # SHA-1 Hex commit ID
+  /*name/*tree                                      # branch, else tag, else commit
+
+The route's root serves a repository index; C<index_branches> enables
 branch links on that page and defaults to false.
-Files in C<share/public> are served verbatim under C</~static/> using Mojo's static
-file handler, regardless of the mount path.
+
+Files in C<share/public> are served verbatim under C<~static/> within the mount,
+using Mojo's static file handler.
+
+The C<~branch>, C<~tag>, and C<~commit> prefixes are followed by a single path component that
+unambiguously represents a tree; branch and tag names containing '/' have that character
+replaced by '~'.  In the last form, path components are consumed from the URL in sequence until
+it matches a branch or tag or SHA1, which is convenient but can be ambiguous.  For example,
+if a tag named C<issue> exists and a branch named C<issue/123> exists, a url for
+C<< issue/123/modules >> resolves to the path C<< 123/modules >> within tag "issue", and does
+not find the branch.  Most users won't have overlapping branches and tags, though, so these
+URLs are more convenient.
 
 =cut
 
 sub mount($class, $base_route, $cpan_repo, %options) {
-   my $root= $base_route->root;
-   unless ($root->{_cpan_ingit_public}) {
-      my $static= Mojolicious::Static->new(
-         paths => [$class->_share_dir->child('public')->to_string], prefix => '/~static');
-      $root->get('/~static/*asset')->to(cb => sub($c) {
-         $static->dispatch($c) || $c->reply->not_found;
-      });
-      # Static files must take precedence over the catch-all branch index.
-      unshift $root->children->@*, pop $root->children->@*;
-      $root->{_cpan_ingit_public}= $static;
-   }
    my $atree= $options{archive_tree};
+   my $app= delete $options{app};
+   # Ensure there is a cache if serving all branches
+   $options{branch_cache} //= $class->_new_cache
+      unless defined $atree;
+   # This function could be called multiple times to mount various repos at different paths,
+   # so each instance needs a different route namespace.
+   # The route_ns is added as a stash attribute and used by actions when generating URLs.
+   my $route_ns= 'cpan_ingit_'.++$base_route->root->{_cpan_ingit_mount_count};
+   my $configured_route= $base_route->to(
+      namespace => '',
+      controller => $class,
+      cpan_ingit_route_ns => $route_ns,
+      cpan_repo => $cpan_repo,
+      %options
+   );
+   # Register static before the catch-all branch index, and serve only the captured path
+   # so static lookup does not depend on how deeply the application is mounted.
+   my $static= Mojolicious::Static->new(paths => [$class->_share_dir->child('public')->to_string]);
+   $configured_route->get('/~static/*asset')->to(cb => sub($c) {
+      local $c->stash->{path}= $c->stash('asset');
+      $static->dispatch($c) || $c->reply->not_found;
+   })->name("$route_ns.assets");
+   # If serving all branches, capture the branch from however many path components match,
+   # then differentiate the tree route from the base route.
+   my $tree_route= $configured_route;
    if ($atree) {
       croak "Not an ArchiveTree"
          unless blessed($atree) && $atree->can('get_path');
    } else {
-      # Ensure there is a cache if serving all branches
-      $options{branch_cache} //= $class->_new_cache;
+      $configured_route->get('/')->to(action => 'serve_repo_index');
+      $app or croak 'Multi-tree mounts require the app => $app option';
+      $class->_install_tree_rewrite($app, $base_route, $cpan_repo, $options{branch_head_only});
+      $tree_route= $configured_route->any('/*tree_name',
+         [tree_name => $options{branch_head_only}? qr{~branch/[^/]+} : qr{~(?:branch|tag|commit)/[^/]+} ]);
    }
-   $base_route= $base_route->to(namespace => '', controller => $class, cpan_repo => $cpan_repo, %options);
-   $base_route->get('/')->to(action => 'serve_repo_index') unless $atree;
-   # Keep each suffix in the same pattern as the branch wildcard, so Git branch
-   # names containing slashes can be matched without consuming the file path.
-   my $prefix= $atree? '' : '/*branch_name';
-   $base_route->get("$prefix/modules/02packages.details", [ format => ['txt','txt.gz'] ])
+   $tree_route->get('/modules/02packages.details', [ format => ['txt','txt.gz'] ])
       ->to(action => 'serve_package_details');
-   $base_route->get("$prefix/authors/id/*author_path")->to(action => 'serve_author_file');
-   $base_route->get("$prefix/modules/")->to(action => 'serve_module_list');
-   $base_route->get($atree? '/' : $prefix, [ branch_name => qr{.+?(?=/?$)}, format => 0 ])
-      ->to(action => 'serve_index');
+   $tree_route->get('/authors/id/*author_path')->to(action => 'serve_author_file')->name("$route_ns.authors");
+   $tree_route->get('/modules/')->to(action => 'serve_module_list')->name("$route_ns.modules");
+   $tree_route->get('/', [ format => 0 ])
+      ->to(action => 'serve_index')->name("$route_ns.index");
+}
+
+# Resolve friendly paths before Mojo computes its routing-cache key. Stop at
+# this app's routes even when the app is embedded in another application.
+sub _install_tree_rewrite($class, $app, $base_route, $repo, $branch_head_only) {
+   my @patterns;
+   for (my $route= $base_route; ; $route= $route->parent) {
+      croak 'Mount route does not belong to app' unless $route;
+      last if refaddr($route) == refaddr($app->routes);
+      unshift @patterns, $route->pattern;
+   }
+   $app->hook(before_routes => sub($c) {
+      my $original= $c->stash->{path} // $c->req->url->path->to_route;
+      $original= "/$original" unless $original =~ m{^/};
+      my $remaining= $original;
+      for my $pattern (@patterns) {
+         return unless $pattern->match_partial(\$remaining, 0);
+      }
+      return if $remaining eq '' || $remaining eq '/' || $remaining =~ m{^/~};
+      my $prefix= substr($original, 0, length($original)-length($remaining));
+      my @parts;
+      while ($remaining =~ m{\G/([^/]+)}gc) {
+         push @parts, $1;
+         my $name= join '/', @parts;
+         my $canonical;
+         if (eval { Git::Raw::Branch->lookup($repo->git_repo, $name, 1) }) {
+            $canonical= '~branch/'.join('~',@parts);
+         } elsif (!$branch_head_only) {
+            if (eval { Git::Raw::Reference->lookup("refs/tags/$name", $repo->git_repo) }) {
+               $canonical= '~tag/'.join('~',@parts);
+            }
+            elsif (@parts == 1 && $name =~ /\A[0-9a-fA-F]{6,40}\z/
+                  && (my $commit= eval { Git::Raw::Commit->lookup($repo->git_repo, $name) })
+            ) {
+               $canonical= '~commit/'.$commit->id;
+            }
+            # HEAD is a friendly alias, not an explicit branch name.
+            elsif ($name eq 'HEAD') {
+               my $commit= eval { $repo->git_repo->head->peel('commit') };
+               $canonical= '~commit/'.$commit->id if $commit;
+            }
+         }
+         next unless $canonical;
+         $c->stash->{path}= "$prefix/$canonical".substr($remaining, pos($remaining));
+         last;
+      }
+   });
 }
 
 =method serve_repo_index
@@ -213,14 +318,13 @@ sub serve_repo_index($c) {
    my @branches;
    my $index_branches= $c->index_branches // 0;
    if ($index_branches) {
-      my $base= $c->url_for->query(undef);
-      my $base_path= $base->path->to_string =~ s{/*$}{/}r;
+      my $route_ns= $c->stash('cpan_ingit_route_ns');
       for my $branch (sort { $a->shorthand cmp $b->shorthand } $c->cpan_repo->git_repo->branches('local')) {
          my $tree= $branch->peel('tree');
          next unless $tree->entry_bypath('cpan_ingit.json')
             && $tree->entry_bypath('modules/02packages.details.txt');
          my $name= $branch->shorthand;
-         push @branches, { name => $name, url => $base->clone->path($base_path.Mojo::Util::url_escape($name).'/') };
+         push @branches, { name => $name, url => $c->url_for("$route_ns.index", tree_name => '~branch/'.($name =~ tr{/}{~}r))->path->trailing_slash(1) };
       }
    }
    $c->render(inline => $c->_share_dir->child('repo_index.html.ep')->slurp('UTF-8'), handler => 'ep', format => 'html',
@@ -292,7 +396,7 @@ sub _module_page($c, $index) {
 }
 
 sub serve_module_list($c) {
-   return undef unless $c->check_branch_exists;
+   return undef unless $c->check_tree_exists;
    return $c->render(status => 400, json => { error => 'Supply only one of after and before' })
       if defined $c->param('after') && defined $c->param('before');
    my $index= $c->_module_index
@@ -301,38 +405,37 @@ sub serve_module_list($c) {
 }
 
 sub serve_index($c) {
-   return undef unless $c->check_branch_exists;
+   return undef unless $c->check_tree_exists;
    my $index= $c->_module_index
       or return $c->render(status => 404, text => 'No package index in this tree');
    my $atree= $c->archive_tree;
    my $origin= $atree->branch;
-   (undef, $origin)= $c->cpan_repo->lookup_tree($c->branch_name // $atree->name)
-      unless $origin;
+   $origin //= $c->tree_name? $c->_tree_object($c->cpan_repo, $c->tree_name) : undef;
+   (undef, $origin)= $c->cpan_repo->lookup_tree($atree->name) unless $origin;
    $origin= $origin->target while $origin && $origin->isa('Git::Raw::Tag');
    my $commit= !$origin? undef
       : $origin->isa('Git::Raw::Commit')? $origin : $origin->peel('commit');
-   my $base= $c->url_for->query(undef);
-   my $base_path= $base->path->to_string =~ s{/*$}{/}r;
+   my $route_ns= $c->stash('cpan_ingit_route_ns');
    $c->render(inline => $c->_share_dir->child('archive_tree_index.html.ep')->slurp('UTF-8'), handler => 'ep', format => 'html',
       module_page => $c->_module_page($index), index_updated => $index->{updated},
       commit_date => $commit? gmtime($commit->time)->strftime('%a, %d %b %Y %H:%M:%S GMT') : undef,
-      tree_name => $c->branch_name // $atree->name,
-      json_url => $base->clone->path($base_path.'modules/'),
-      script_url => $c->url_for('/~static/archive_tree_index.js'),
-      cve_script_url => $c->url_for('/~static/cpan_cves.js'),
-      authors_url => $base->clone->path($base_path.'authors/id/'));
+      tree_label => $atree->name,
+      json_url => $c->url_for("$route_ns.modules")->path->trailing_slash(1),
+      script_url => $c->url_for("$route_ns.assets", asset => 'archive_tree_index.js'),
+      cve_script_url => $c->url_for("$route_ns.assets", asset => 'cpan_cves.js'),
+      authors_url => $c->url_for("$route_ns.authors", author_path => ''));
 }
 
-=method check_branch_exists
+=method check_tree_exists
 
-This checks that the L</branch_name> could be successfully resolved to a L</archive_tree>.
-It returns true, or sets a 404 error and returns undef, and can be used as C<< ->under(\&check_branch_exists) >>.
+This checks that the L</tree_name> could be successfully resolved to a L</archive_tree>.
+It returns true, or sets a 404 error and returns undef, and can be used as C<< ->under(\&check_tree_exists) >>.
 
 =cut
 
-sub check_branch_exists($c) {
+sub check_tree_exists($c) {
    unless ($c->archive_tree) {
-      $c->render(text => 'Git branch does not exist', status => 404);
+      $c->render(text => 'Git tree does not exist', status => 404);
       return undef;
    }
    return 1;
@@ -345,7 +448,7 @@ Serve C<< modules/02packages.details.txt[.gz] >>.
 =cut
 
 sub serve_package_details($c) {
-   return undef unless $c->check_branch_exists;
+   return undef unless $c->check_tree_exists;
    my $blob= $c->archive_tree->package_details_blob;
    $c->respond_to(
       txt      => sub { $c->render(text => $blob->content) },
@@ -362,7 +465,7 @@ allowing distributions to be unpacked within the git repo, but served as .tar.gz
 =cut
 
 sub serve_author_file($c) {
-   return undef unless $c->check_branch_exists;
+   return undef unless $c->check_tree_exists;
    my $path= 'authors/id/'.$c->stash->{author_path};
    # cpanm adds extra '/' when the path name doesn't match the expected A/AU/AUTHOR format
    $path =~ s,//+,/,g;

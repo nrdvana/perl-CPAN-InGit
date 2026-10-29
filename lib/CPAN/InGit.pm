@@ -173,7 +173,9 @@ sub _open_repo($thing) {
   $mirror= $cpan_repo->get_archive_tree($branch_or_tag_or_id);
 
 Return a L<ArchiveTree object|CPAN::InGit::ArchiveTree> for the given
-branch name, git tag, or commit hash.  This branch must look like an archive
+branch name, git tag, or commit hash. A Git::Raw::Reference, Git::Raw::Tag,
+or Git::Raw::Commit object can also select a tree without resolving a name.
+This tree must look like an archive
 (having C<< /cpan_ingit.json >>) or it will return C<undef>.
 
 =cut
@@ -252,12 +254,16 @@ sub lookup_tree($self, $branch_or_tag_or_id) {
    my ($tree, $origin);
    defined $branch_or_tag_or_id or croak "missing argument";
    my $repo= $self->git_repo;
-   if (blessed($branch_or_tag_or_id) && (
-         $branch_or_tag_or_id->isa('Git::Raw::Branch')
-      || $branch_or_tag_or_id->isa('Git::Raw::Tag')
-   )) {
+   if (blessed($branch_or_tag_or_id) && $branch_or_tag_or_id->isa('Git::Raw::Reference')) {
       $origin= $branch_or_tag_or_id;
       $tree= $origin->peel('tree');
+   } elsif (blessed($branch_or_tag_or_id) && $branch_or_tag_or_id->isa('Git::Raw::Commit')) {
+      $origin= $branch_or_tag_or_id;
+      $tree= $origin->tree;
+   } elsif (blessed($branch_or_tag_or_id) && $branch_or_tag_or_id->isa('Git::Raw::Tag')) {
+      $origin= $branch_or_tag_or_id;
+      $origin= $origin->target while $origin->isa('Git::Raw::Tag');
+      $tree= $origin->isa('Git::Raw::Commit')? $origin->tree : $origin;
    } elsif ($branch_or_tag_or_id eq 'HEAD') {
       $tree= $repo->head->target->tree;
       $origin= $repo->is_head_detached? undef
