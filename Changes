@@ -1,3 +1,8 @@
+0.005 - 2026-10-29
+  - Declare missing dependency on Log::Any::Adapter::MojoLog
+  - Suppress ssl-related crash on FreeBSD from tests, since the bug
+    needs fixed upstream in Git::Raw.
+
 0.004 - 2026-10-28
   - Fix ability for commands to update the index of the working branch
   - Server:
