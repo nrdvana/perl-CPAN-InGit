@@ -1,3 +1,11 @@
+0.006 - 2026-10-29
+  - Server:
+     - Fix ability to run Mojo server mounted at a deeper path than '/'
+     - Fix ability to serve branch and tag names containing '/'
+     - Add canonical ~branch/, ~tag/, and ~commit/ paths
+     - Resolve friendly tree paths to these canonical paths before routing
+       so that Mojo's URL caching doesn't hide changes in available git refs.
+
 0.005 - 2026-10-29
   - Declare missing dependency on Log::Any::Adapter::MojoLog
   - Suppress ssl-related crash on FreeBSD from tests, since the bug
